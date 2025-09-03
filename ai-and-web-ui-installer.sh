@@ -1,8 +1,3 @@
-cd /workspace
-
-apt-get update -y && apt-get install -y nano
-
-nano ai-and-web-ui-installer.sh
 
 #!/usr/bin/env bash
 set -euo pipefail
