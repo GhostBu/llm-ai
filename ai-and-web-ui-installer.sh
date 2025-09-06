@@ -1,42 +1,121 @@
-
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 # =========================
 # CONFIG — VALORI FISSI
 # =========================
-# Percorsi su Google Drive (condivisi al SA come "Lettore")
 GDRIVE_ROOT="programming/imm-gen-ai/llm-ai"
 GDRIVE_MODELS_SUB="models/OpenHermes-2.5-Mistral-7B"
 GDRIVE_WEBUI_SUB="text-generation-webui-oobabooga"
 
-# Porte e credenziali WebUI
 WEBUI_PORT="7860"
-WEBUI_AUTH_USER="Marco"        # TODO
-WEBUI_AUTH_PASS="gggg9999"  # TODO
+WEBUI_AUTH_USER="Marco"
+WEBUI_AUTH_PASS="gggg9999"
 
-# Percorsi locali sul Pod
 LOC_ROOT="/workspace"
 LOC_MODELS="${LOC_ROOT}/models"
 LOC_WEBUI="${LOC_ROOT}/webui"
 
-# Rclone tuning
 RCLONE_TRANSFERS="8"
 RCLONE_CHECKERS="16"
 RCLONE_CHUNK="128M"
 
 # =========================
+# SSH (persistente) — AUTORIZZAZIONE CHIAVE PUBBLICA
+# =========================
+PUBLIC_SSH_KEY='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICKRuWOwBaaiVaehn5LhscLfZcha9cmT+ZI4O4SQ6Y0Y runpod-20250906'
+
+echo "[SSH] Setup persistente in /workspace/.ssh"
+mkdir -p /workspace/.ssh
+chmod 700 /workspace/.ssh
+chown -R root:root /workspace/.ssh
+
+touch /workspace/.ssh/authorized_keys
+chmod 600 /workspace/.ssh/authorized_keys
+chown root:root /workspace/.ssh/authorized_keys
+
+if ! grep -qxF "$PUBLIC_SSH_KEY" /workspace/.ssh/authorized_keys; then
+  echo "$PUBLIC_SSH_KEY" >> /workspace/.ssh/authorized_keys
+  echo "[SSH] Chiave aggiunta a /workspace/.ssh/authorized_keys"
+else
+  echo "[SSH] Chiave già presente"
+fi
+
+# Punta la home (~/.ssh) alla copia persistente
+if [ -e "${HOME}/.ssh" ] || [ -L "${HOME}/.ssh" ]; then
+  rm -rf "${HOME}/.ssh"
+fi
+ln -s /workspace/.ssh "${HOME}/.ssh"
+
+# =========================
+# AUTO-DETECT HOST/PORTE E STAMPA COMANDI SSH
+# =========================
+# Consenti override esterno:
+SSH_PUBLIC_HOST="${SSH_PUBLIC_HOST:-}"
+SSH_PUBLIC_PORT="${SSH_PUBLIC_PORT:-}"
+
+detect_public_host() {
+  # prova servizi pubblici (silenziosi in errore)
+  local h=""
+  h="$(curl -fsS -4 ifconfig.me 2>/dev/null || true)"
+  if [ -z "$h" ]; then
+    h="$(dig +short myip.opendns.com @resolver1.opendns.com 2>/dev/null || true)"
+  fi
+  echo "$h"
+}
+
+detect_public_port() {
+  # prova env comuni; se non trovata, fallback 22
+  for var in RUNPOD_SSH_PUBLIC_PORT RUNPOD_SSH_PORT SSH_PUBLIC_PORT SSH_PORT MAPPED_SSH_PORT; do
+    if [ -n "${!var:-}" ]; then
+      echo "${!var}"
+      return 0
+    fi
+  done
+  echo "22"
+}
+
+if [ -z "$SSH_PUBLIC_HOST" ]; then
+  SSH_PUBLIC_HOST="$(detect_public_host || true)"
+fi
+if [ -z "$SSH_PUBLIC_PORT" ]; then
+  SSH_PUBLIC_PORT="$(detect_public_port || true)"
+fi
+
+# Username corrente (di solito root)
+SSH_USER="${USER:-root}"
+
+echo "[SSH] ==== COMANDI SUGGERITI ===="
+if [ -n "$SSH_PUBLIC_HOST" ]; then
+  echo "ssh -i ~/.ssh/runpod -p ${SSH_PUBLIC_PORT} ${SSH_USER}@${SSH_PUBLIC_HOST} 'echo ok'"
+  echo "ssh -i ~/.ssh/runpod -p ${SSH_PUBLIC_PORT} -N -L ${WEBUI_PORT}:localhost:${WEBUI_PORT} ${SSH_USER}@${SSH_PUBLIC_HOST}"
+else
+  echo "# Non sono riuscito a rilevare l'host pubblico."
+  echo "# Sostituisci <HOST> e <PORTA> con i valori visti in UI (Direct TCP Ports)."
+  echo "ssh -i ~/.ssh/runpod -p <PORTA> ${SSH_USER}@<HOST> 'echo ok'"
+  echo "ssh -i ~/.ssh/runpod -p <PORTA> -N -L ${WEBUI_PORT}:localhost:${WEBUI_PORT} ${SSH_USER}@<HOST>"
+  echo "# Oppure rilancia così:"
+  echo "SSH_PUBLIC_HOST=69.30.85.177 SSH_PUBLIC_PORT=22174 ./ai-and-web-ui-installer.sh"
+fi
+echo "[SSH] ============================"
+
+# =========================
 # BOOTSTRAP
 # =========================
-echo "[BOOT] Update and base tools"
-apt-get update -y && apt-get install -y curl unzip git python3-pip
+echo "[BOOT] Update e tool di base"
+apt-get update -y && apt-get install -y curl unzip git python3-pip dnsutils >/dev/null
 
 echo "[BOOT] Install rclone"
 curl -fsSL https://rclone.org/install.sh | bash
 
-echo "[BOOT] Write Service Account key"
+echo "[BOOT] Prepara directory"
 mkdir -p /root/.config/rclone "${LOC_MODELS}" "${LOC_WEBUI}"
 
+# =========================
+# GOOGLE DRIVE SERVICE ACCOUNT (rclone)
+# =========================
+echo "[BOOT] Scrivo Service Account JSON (sostituisci con la tua chiave reale se necessario)"
 cat >/root/sa.json <<'JSON'
 {
   "type": "service_account",
@@ -52,7 +131,6 @@ cat >/root/sa.json <<'JSON'
   "universe_domain": "googleapis.com"
 }
 JSON
-
 chmod 600 /root/sa.json
 
 cat >/root/.config/rclone/rclone.conf <<'RC'
@@ -68,36 +146,18 @@ RC
 G_MODELS="gdrive:${GDRIVE_ROOT}/${GDRIVE_MODELS_SUB}"
 G_WEBUI="gdrive:${GDRIVE_ROOT}/${GDRIVE_WEBUI_SUB}"
 
-echo "[CHECK] Listing Drive paths to verify access..."
+echo "[CHECK] Verifica accesso alle path di Drive..."
 rclone ls "${G_MODELS}" >/dev/null || { echo "[ERR] Modelli non accessibili: ${G_MODELS}"; exit 2; }
 rclone ls "${G_WEBUI}"  >/dev/null || { echo "[ERR] WebUI non accessibile: ${G_WEBUI}"; exit 2; }
 
-echo "[SYNC] Copy models from ${G_MODELS}"
+echo "[SYNC] Copio modelli da ${G_MODELS} -> ${LOC_MODELS}"
 rclone copy "${G_MODELS}" "${LOC_MODELS}" \
   --transfers "${RCLONE_TRANSFERS}" --checkers "${RCLONE_CHECKERS}" \
   --drive-chunk-size "${RCLONE_CHUNK}" --progress || true
 
-echo "[SYNC] Copy webui from ${G_WEBUI}"
+echo "[SYNC] Copio webui da ${G_WEBUI} -> ${LOC_WEBUI}"
 rclone copy "${G_WEBUI}" "${LOC_WEBUI}" \
   --transfers "${RCLONE_TRANSFERS}" --checkers "${RCLONE_CHECKERS}" \
   --drive-chunk-size "${RCLONE_CHUNK}" --progress || true
 
-#echo "[SETUP] Python upgrade"
-#python3 -m pip install --upgrade pip
-#
-# =========================
-# PYTORCH & DEPENDENCIES
-# =========================
-#echo "[CUDA] Checking GPU availability..."
-#if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
-#  echo "[CUDA] GPU detected. Installing PyTorch CUDA (cu121)..."
-#  pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu121
-#else
-#  echo "[CUDA] GPU NOT detected. Installing PyTorch CPU build..."
-#  pip install --upgrade torch --index-url https://download.pytorch.org/whl/cpu
-#fi
-
-# Requisiti Text Generation WebUI: usa il file 'requirements/full' se esiste,
-# altrimenti 'requirements.txt' standard, altrimenti tentativo best-effort su transformers/accelerate
-REQ_FILE=""
-if [ -f "${LOC_WEBUI}/re_]()
+echo "[DONE] Setup completato."
