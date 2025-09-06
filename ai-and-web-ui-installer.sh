@@ -29,11 +29,12 @@ PUBLIC_SSH_KEY='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICKRuWOwBaaiVaehn5LhscLfZcha
 echo "[SSH] Setup persistente in /workspace/.ssh"
 mkdir -p /workspace/.ssh
 chmod 700 /workspace/.ssh
-chown -R root:root /workspace/.ssh
+# se non sei root, non fallire
+if [ "$(id -u)" -eq 0 ]; then chown -R root:root /workspace/.ssh || true; fi
 
 touch /workspace/.ssh/authorized_keys
 chmod 600 /workspace/.ssh/authorized_keys
-chown root:root /workspace/.ssh/authorized_keys
+if [ "$(id -u)" -eq 0 ]; then chown root:root /workspace/.ssh/authorized_keys || true; fi
 
 if ! grep -qxF "$PUBLIC_SSH_KEY" /workspace/.ssh/authorized_keys; then
   echo "$PUBLIC_SSH_KEY" >> /workspace/.ssh/authorized_keys
@@ -47,6 +48,19 @@ if [ -e "${HOME}/.ssh" ] || [ -L "${HOME}/.ssh" ]; then
   rm -rf "${HOME}/.ssh"
 fi
 ln -s /workspace/.ssh "${HOME}/.ssh"
+
+# =========================
+# BOOTSTRAP
+# =========================
+echo "[BOOT] Update e tool di base"
+apt-get update -y
+apt-get install -y curl unzip git python3-pip dnsutils
+
+echo "[BOOT] Install rclone"
+curl -fsSL https://rclone.org/install.sh | bash
+
+echo "[BOOT] Prepara directory"
+mkdir -p /root/.config/rclone "${LOC_MODELS}" "${LOC_WEBUI}"
 
 # =========================
 # AUTO-DETECT HOST/PORTE E STAMPA COMANDI SSH
@@ -88,29 +102,17 @@ SSH_USER="${USER:-root}"
 
 echo "[SSH] ==== COMANDI SUGGERITI ===="
 if [ -n "$SSH_PUBLIC_HOST" ]; then
-  echo "ssh -i ~/.ssh/runpod -p ${SSH_PUBLIC_PORT} ${SSH_USER}@${SSH_PUBLIC_HOST} 'echo ok'"
-  echo "ssh -i ~/.ssh/runpod -p ${SSH_PUBLIC_PORT} -N -L ${WEBUI_PORT}:localhost:${WEBUI_PORT} ${SSH_USER}@${SSH_PUBLIC_HOST}"
+  echo "ssh -i ~/.ssh/runpod -o IdentitiesOnly=yes -p ${SSH_PUBLIC_PORT} ${SSH_USER}@${SSH_PUBLIC_HOST} 'echo ok'"
+  echo "ssh -i ~/.ssh/runpod -o IdentitiesOnly=yes -p ${SSH_PUBLIC_PORT} -N -L ${WEBUI_PORT}:localhost:${WEBUI_PORT} ${SSH_USER}@${SSH_PUBLIC_HOST}"
 else
   echo "# Non sono riuscito a rilevare l'host pubblico."
   echo "# Sostituisci <HOST> e <PORTA> con i valori visti in UI (Direct TCP Ports)."
-  echo "ssh -i ~/.ssh/runpod -p <PORTA> ${SSH_USER}@<HOST> 'echo ok'"
-  echo "ssh -i ~/.ssh/runpod -p <PORTA> -N -L ${WEBUI_PORT}:localhost:${WEBUI_PORT} ${SSH_USER}@<HOST>"
+  echo "ssh -i ~/.ssh/runpod -o IdentitiesOnly=yes -p <PORTA> ${SSH_USER}@<HOST> 'echo ok'"
+  echo "ssh -i ~/.ssh/runpod -o IdentitiesOnly=yes -p <PORTA> -N -L ${WEBUI_PORT}:localhost:${WEBUI_PORT} ${SSH_USER}@<HOST>"
   echo "# Oppure rilancia così:"
   echo "SSH_PUBLIC_HOST=69.30.85.177 SSH_PUBLIC_PORT=22174 ./ai-and-web-ui-installer.sh"
 fi
 echo "[SSH] ============================"
-
-# =========================
-# BOOTSTRAP
-# =========================
-echo "[BOOT] Update e tool di base"
-apt-get update -y && apt-get install -y curl unzip git python3-pip dnsutils >/dev/null
-
-echo "[BOOT] Install rclone"
-curl -fsSL https://rclone.org/install.sh | bash
-
-echo "[BOOT] Prepara directory"
-mkdir -p /root/.config/rclone "${LOC_MODELS}" "${LOC_WEBUI}"
 
 # =========================
 # GOOGLE DRIVE SERVICE ACCOUNT (rclone)
