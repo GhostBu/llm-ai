@@ -9,7 +9,7 @@ GDRIVE_ROOT="programming/imm-gen-ai/llm-ai"
 GDRIVE_MODELS_SUB="models/OpenHermes-2.5-Mistral-7B"
 GDRIVE_WEBUI_SUB="text-generation-webui-oobabooga"
 
-WEBUI_PORT="7860"
+WEBUI_PORT="8888"
 WEBUI_AUTH_USER="Marco"
 WEBUI_AUTH_PASS="gggg9999"
 
